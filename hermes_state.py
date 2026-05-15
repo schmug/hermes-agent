@@ -236,7 +236,9 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_content TEXT,
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
-    codex_message_items TEXT
+    codex_message_items TEXT,
+    rating INTEGER,
+    rating_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -570,6 +572,16 @@ class SessionDB:
         # migration was skipped (e.g. due to version renumbering), the
         # column gets created here.
         self._reconcile_columns(cursor)
+
+        # The rating/rating_at columns are added by reconciliation above.
+        # Their index must be created AFTER reconcile, not in SCHEMA_SQL:
+        # executescript(SCHEMA_SQL) runs before reconcile, so on a DB that
+        # predates the rating columns a CREATE INDEX referencing `rating`
+        # there would fail with "no such column".
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_rating "
+            "ON messages(session_id, rating)"
+        )
 
         # ── Schema version bookkeeping ─────────────────────────────────
         # Bump to current so future data migrations (if any) can gate on
@@ -1516,6 +1528,126 @@ class SessionDB:
             return msg_id
 
         return self._execute_write(_do)
+
+    def set_message_rating(self, message_id: int, rating: Optional[int]) -> bool:
+        """Set (or clear) the thumbs rating on a single message.
+
+        ``rating`` is +1 (thumbs up), -1 (thumbs down), or 0/None to clear.
+        Returns True if a row was updated. Only the rating columns are
+        written so the messages_fts_update trigger re-indexes identical
+        content (harmless) rather than touching message text.
+        """
+        if rating in (0, None):
+            norm: Optional[int] = None
+            rated_at: Optional[float] = None
+        elif rating in (1, -1):
+            norm = int(rating)
+            rated_at = time.time()
+        else:
+            raise ValueError(
+                f"rating must be one of -1, 0, 1, None (got {rating!r})"
+            )
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE messages SET rating = ?, rating_at = ? WHERE id = ?",
+                (norm, rated_at, message_id),
+            )
+            return cursor.rowcount > 0
+
+        return self._execute_write(_do)
+
+    def get_last_assistant_message_id(self, session_id: str) -> Optional[int]:
+        """Return the id of the most recently inserted assistant message."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND role = 'assistant' "
+                "ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return row["id"] if hasattr(row, "keys") else row[0]
+
+    def get_rating_stats(
+        self, since_ts: float = None, limit: int = None
+    ) -> Dict[str, Any]:
+        """Aggregate thumbs ratings across rated assistant messages.
+
+        Returns ``{up, down, total_rated, score}`` where score is the
+        normalized preference ``(up - down) / max(1, up + down)`` in
+        [-1, 1]. ``since_ts`` filters by ``rating_at``; ``limit`` caps to
+        the most recently rated N messages.
+        """
+        clauses = ["role = 'assistant'", "rating IS NOT NULL"]
+        params: List[Any] = []
+        if since_ts is not None:
+            clauses.append("rating_at >= ?")
+            params.append(since_ts)
+        where = " AND ".join(clauses)
+        if limit is not None:
+            sql = (
+                f"SELECT rating FROM messages WHERE {where} "
+                f"ORDER BY rating_at DESC, id DESC LIMIT ?"
+            )
+            params.append(limit)
+        else:
+            sql = f"SELECT rating FROM messages WHERE {where}"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        up = 0
+        down = 0
+        for row in rows:
+            val = row["rating"] if hasattr(row, "keys") else row[0]
+            if val == 1:
+                up += 1
+            elif val == -1:
+                down += 1
+        total = up + down
+        score = (up - down) / total if total else 0.0
+        return {"up": up, "down": down, "total_rated": total, "score": score}
+
+    def get_rated_turns(
+        self, since_ts: float = None, limit: int = None
+    ) -> List[Dict[str, Any]]:
+        """Return rated assistant turns paired with their preceding user msg.
+
+        Each item: ``{session_id, message_id, rating, rating_at,
+        user_content, assistant_content}``. The preceding user message is
+        the highest-id message with role='user' before the assistant row
+        within the same session. Ordered most-recently-rated first.
+        """
+        clauses = ["a.role = 'assistant'", "a.rating IS NOT NULL"]
+        params: List[Any] = []
+        if since_ts is not None:
+            clauses.append("a.rating_at >= ?")
+            params.append(since_ts)
+        where = " AND ".join(clauses)
+        sql = (
+            "SELECT a.id AS message_id, a.session_id AS session_id, "
+            "a.rating AS rating, a.rating_at AS rating_at, "
+            "a.content AS assistant_content, "
+            "(SELECT u.content FROM messages u "
+            " WHERE u.session_id = a.session_id AND u.role = 'user' "
+            " AND u.id < a.id ORDER BY u.id DESC LIMIT 1) AS user_content "
+            f"FROM messages a WHERE {where} "
+            "ORDER BY a.rating_at DESC, a.id DESC"
+        )
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["assistant_content"] = self._decode_content(
+                d.get("assistant_content")
+            )
+            d["user_content"] = self._decode_content(d.get("user_content"))
+            result.append(d)
+        return result
 
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Atomically replace every message for a session.

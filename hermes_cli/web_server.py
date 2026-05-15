@@ -2444,6 +2444,59 @@ async def get_session_messages(session_id: str):
         db.close()
 
 
+class MessageRating(BaseModel):
+    rating: int  # 1 = thumbs up, -1 = thumbs down, 0 = clear
+
+
+@app.post("/api/sessions/{session_id}/messages/{message_id}/rating")
+async def rate_session_message(
+    session_id: str, message_id: int, body: MessageRating
+):
+    """Attach an optional thumbs rating to a single assistant message.
+
+    Token-gated like the rest of /api/ (deliberately NOT in
+    _PUBLIC_API_PATHS).
+    """
+    if body.rating not in (-1, 0, 1):
+        raise HTTPException(
+            status_code=400, detail="rating must be -1, 0, or 1"
+        )
+    from hermes_state import SessionDB
+    db = SessionDB()
+    try:
+        ok = db.set_message_rating(
+            message_id, body.rating if body.rating != 0 else None
+        )
+        if not ok:
+            raise HTTPException(status_code=404, detail="Message not found")
+        return {"ok": True, "message_id": message_id, "rating": body.rating}
+    finally:
+        db.close()
+
+
+@app.get("/api/feedback/stats")
+async def get_feedback_stats():
+    """Aggregate thumbs signal for a dashboard widget."""
+    from hermes_state import SessionDB
+    db = SessionDB()
+    try:
+        return db.get_rating_stats()
+    finally:
+        db.close()
+
+
+@app.post("/api/feedback/optimize")
+async def trigger_feedback_optimize():
+    """Manually run one autoresearch-style optimization step."""
+    from agent.feedback_optimizer import run_feedback_optimization
+    try:
+        summary = run_feedback_optimization(force=True)
+        return {"ok": True, "summary": summary}
+    except Exception as e:
+        _log.exception("POST /api/feedback/optimize failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.delete("/api/sessions/{session_id}")
 async def delete_session_endpoint(session_id: str):
     from hermes_state import SessionDB

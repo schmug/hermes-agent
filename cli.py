@@ -2859,6 +2859,9 @@ class HermesCLI:
         # don't auto-queue another continuation on top of a user-cancelled
         # turn (which would make Ctrl+C feel like it did nothing).
         self._last_turn_interrupted = False
+        # Persisted id of the last completed turn's assistant message, used
+        # by /thumbsup, /thumbsdown and /unrate. None until a turn completes.
+        self._last_rated_message_id = None
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._clarify_state = None
@@ -7562,6 +7565,100 @@ class HermesCLI:
         print(f"(._.) Unknown cron command: {subcommand}")
         print("  Available: list, add, edit, pause, resume, run, remove")
 
+    def _handle_rate_command(self, rating):
+        """Apply (or clear) a thumbs rating on the just-completed turn.
+
+        ``rating`` is +1 (/thumbsup), -1 (/thumbsdown) or None (/unrate).
+        Rating is always optional and user-initiated; if no turn has
+        completed yet there is simply nothing to rate.
+        """
+        msg_id = getattr(self, "_last_rated_message_id", None)
+        if not msg_id:
+            self._console_print(
+                "  [yellow]No completed turn to rate yet.[/]"
+            )
+            return
+        db = getattr(self, "_session_db", None)
+        if db is None:
+            self._console_print(
+                "  [yellow]Session database unavailable; rating skipped.[/]"
+            )
+            return
+        try:
+            ok = db.set_message_rating(msg_id, rating)
+        except Exception as exc:
+            self._console_print(f"  [red]Could not record rating: {exc}[/]")
+            return
+        if not ok:
+            self._console_print(
+                "  [yellow]That turn is no longer in the database.[/]"
+            )
+            return
+        if rating == 1:
+            self._console_print("  [green]\U0001f44d Thanks — rated up.[/]")
+        elif rating == -1:
+            self._console_print("  [green]\U0001f44e Noted — rated down.[/]")
+        else:
+            self._console_print("  [green]Rating cleared.[/]")
+
+    def _handle_feedback_command(self, cmd: str):
+        """Handle /feedback [stats|optimize].
+
+        ``stats`` (default) prints the aggregate thumbs signal. ``optimize``
+        manually triggers the autoresearch-style optimization loop.
+        """
+        import shlex
+
+        tokens = shlex.split(cmd)[1:] if cmd else []
+        sub = tokens[0].lower() if tokens else "stats"
+        db = getattr(self, "_session_db", None)
+        if db is None:
+            self._console_print(
+                "  [yellow]Session database unavailable.[/]"
+            )
+            return
+
+        if sub == "stats":
+            try:
+                stats = db.get_rating_stats()
+            except Exception as exc:
+                self._console_print(f"  [red]feedback: {exc}[/]")
+                return
+            self._console_print(
+                f"  Feedback signal: \U0001f44d {stats['up']}  "
+                f"\U0001f44e {stats['down']}  "
+                f"(rated {stats['total_rated']}, "
+                f"score {stats['score']:+.2f})"
+            )
+            return
+
+        if sub == "optimize":
+            try:
+                from agent.feedback_optimizer import run_feedback_optimization
+            except Exception as exc:
+                self._console_print(
+                    f"  [red]feedback optimizer unavailable: {exc}[/]"
+                )
+                return
+            with self._busy_command("Running feedback optimization…"):
+                try:
+                    summary = run_feedback_optimization(
+                        agent=getattr(self, "agent", None),
+                        session_db=db,
+                        force=True,
+                    )
+                except Exception as exc:
+                    self._console_print(
+                        f"  [red]feedback optimize failed: {exc}[/]"
+                    )
+                    return
+            self._console_print(f"  {summary}")
+            return
+
+        self._console_print(
+            "  Usage: /feedback [stats|optimize]"
+        )
+
     def _handle_curator_command(self, cmd: str):
         """Handle /curator slash command.
 
@@ -7878,6 +7975,14 @@ class HermesCLI:
             self._handle_cron_command(cmd_original)
         elif canonical == "curator":
             self._handle_curator_command(cmd_original)
+        elif canonical == "thumbsup":
+            self._handle_rate_command(1)
+        elif canonical == "thumbsdown":
+            self._handle_rate_command(-1)
+        elif canonical == "unrate":
+            self._handle_rate_command(None)
+        elif canonical == "feedback":
+            self._handle_feedback_command(cmd_original)
         elif canonical == "kanban":
             self._handle_kanban_command(cmd_original)
         elif canonical == "skills":
@@ -11165,6 +11270,10 @@ class HermesCLI:
             # Expose the flag for post-turn hooks (e.g. goal continuation)
             # so they can skip themselves when the turn was user-cancelled.
             self._last_turn_interrupted = _interrupted_this_turn
+            # Remember which assistant message this turn produced so the
+            # user can optionally rate it with /thumbsup or /thumbsdown.
+            if result and result.get("assistant_message_id") is not None:
+                self._last_rated_message_id = result.get("assistant_message_id")
             if _interrupted_this_turn:
                 pending_message = result.get("interrupt_message") or interrupt_msg
                 # Add indicator that we were interrupted
@@ -11675,6 +11784,21 @@ class HermesCLI:
                 idle_for_seconds=float("inf"),  # CLI startup = fully idle
                 on_summary=lambda msg: self._console_print(
                     f"[dim #6b7684]💾 {msg}[/]"
+                ),
+            )
+        except Exception:
+            pass
+
+        # Feedback optimizer — autoresearch-style loop that uses the thumbs
+        # up/down signal to iterate on persona/memory/skills. Disabled by
+        # default; gated by interval + sample-size. Same idle background
+        # pattern as the curator above.
+        try:
+            from agent.feedback_optimizer import maybe_run_feedback_optimization
+            maybe_run_feedback_optimization(
+                idle_for_seconds=float("inf"),
+                on_summary=lambda msg: self._console_print(
+                    f"[dim #6b7684]📊 {msg}[/]"
                 ),
             )
         except Exception:
