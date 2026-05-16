@@ -3,6 +3,9 @@
 **Date:** 2026-05-16
 **Status:** Approved design — ready for implementation planning
 **Owner:** Cory (solo dev, ~4 repos)
+**Rollout:** Pilot on **one** repo for a cycle, verify the gate, then expand to
+the rest (dmarcheck, donthype-me, benchburner, apartment-stager). Pilot repo TBD
+by owner.
 
 ## Problem
 
@@ -26,7 +29,12 @@ low-risk PRs auto-merge.
   any Routine. The `/issue` skill is the bridge — it emits a prompt-shaped issue
   body the implementer can execute cold.
 - **No first-class auto-merge.** A Routine shells `gh pr merge`; safety must
-  come from the provenance/risk gate **plus** GitHub branch protection.
+  come from the provenance/risk gate **plus** GitHub branch protection. Branch
+  protection state is **audited first** (implementation step 1) and provisioned
+  where missing before any Routine goes live.
+- **Per-repo base branch.** The PR target is the repo's integration branch, not
+  always `main`. donthype-me uses a `dev→main` flow → its base is `dev`. Base
+  branch is per-repo config consumed by both Routines.
 - **GitHub issue-event trigger filtering is only partially documented**
   (PR/Release mature; issue-opened/labeled listed but undetailed). Treated as
   unverified — the design does not depend on it.
@@ -86,14 +94,15 @@ Defense-in-depth — a PR auto-merges only if **all six** hold:
 2. **Intent token:** that issue carries `spec-approved`. **Only my interactive
    mobile spec'ing session applies this label.** The implementer Routine is
    forbidden from ever touching it — the autonomous side can never mint its own
-   trust.
+   trust. Triage access on all target repos is **me only**, so the label is a
+   binding gate (not merely an intent marker) — but condition 1 remains primary.
 3. **Linkage:** PR body has `Closes #<n>` resolving to an issue passing (1)+(2).
    No resolvable trusted link → escalate.
 4. **Risk-path denylist:** diff touches *none* of: auth/crypto/JWT,
    `.github/workflows/**`, IaC/infra, DB migrations, `.env*`/secrets, MTA-STS
    `redirect:"manual"` code, Cloudflare Access policies. Any hit → escalate.
-5. **Size envelope:** ≤ ~150 changed lines and ≤ ~5 files (tunable). Over →
-   escalate.
+5. **Size envelope:** ≤ ~250 changed lines and ≤ ~8 files (higher-throughput
+   setting; tunable). Over → escalate.
 6. **CI green + scope-fit:** all required checks pass and changed files fall
    within the issue's declared file-pointer list / "out of scope" section
    (emitted by the `/issue` skill). Drift or red CI → escalate.
@@ -111,7 +120,7 @@ the binding gate and treat the label purely as an intent marker.
 ## Routine #1 — Implementer
 
 - `gh issue list --label spec-approved --state open` across configured repos;
-  filter to allowlisted authors; **oldest N=4 first** (bounds run length).
+  filter to allowlisted authors; **oldest N=6 first** (bounds run length).
 - Per issue: branch `claude/issue-<n>`, implement strictly within the issue's
   declared file pointers/scope, honoring that repo's `CLAUDE.md`, `/spec`,
   `/ship` conventions.
@@ -131,9 +140,9 @@ the binding gate and treat the label purely as an intent marker.
 - **FAIL →** label `needs-you` + one-line reason; **skip** PRs already
   `needs-you` (idempotent, never re-merge).
 - End of run: assemble *all* escalations into **one ranked digest** (safest/
-  smallest first, then issue priority) and deliver to my phone via the connected
-  channel. This digest is the anti-drowning surface — I triage a vetted, ordered
-  list, not raw PRs.
+  smallest first, then issue priority) and deliver as a **Claude mobile app
+  notification / session** I open from the phone. This digest is the
+  anti-drowning surface — I triage a vetted, ordered list, not raw PRs.
 
 ## Failure handling & observability
 
@@ -149,8 +158,9 @@ the binding gate and treat the label purely as an intent marker.
 ## Cap math (Max = 15 runs/day)
 
 - 4 cycles/day × (1 implementer + 1 reviewer) = **8 runs/day**, 7 spare.
-- Implementer N=4/run × 4 cycles = up to **16 issues/day** implemented; covers
-  5–15/day, drains backlog oldest-first.
+- Implementer N=6/run × 4 cycles = up to **24 issues/day** implemented; covers
+  5–15/day with headroom, drains backlog oldest-first. (Pilot phase: single
+  repo, so effective volume is lower still.)
 - One-off scheduled runs don't count against the cap → manual "kick" without
   spending budget.
 
@@ -161,11 +171,23 @@ the binding gate and treat the label purely as an intent marker.
 - Auto-merge of security/auth/infra/migration changes — always escalated.
 - Aggregate analytics dashboard — only the lightweight per-repo ledger.
 
+## Settled decisions
+
+- **Digest channel:** Claude mobile app notification/session.
+- **Repo access:** owner-only triage → `spec-approved` is a binding gate;
+  author-allowlist (condition 1) still primary.
+- **Thresholds:** N=6 issues/implementer run; auto-merge envelope ≤250 lines /
+  ≤8 files; ~4h cycle (4 cycles/day, ~8 runs/day).
+- **Branch protection:** confirmed/provisioned in implementation step 1 before
+  any Routine goes live.
+- **Rollout:** pilot one repo, then expand to all four.
+
 ## Open items for the implementation plan
 
-- Exact `gh` query syntax + multi-repo iteration for both Routines.
-- Tunable thresholds (N per run, size envelope, cycle interval) as config.
-- Branch-protection ruleset to apply per repo.
-- Concrete digest delivery channel (Slack / Linear / Claude app notification).
+- **Pilot repo selection** (owner to name). Note: donthype-me's `dev→main` flow
+  makes it a poorer first pilot; a `main`-flow repo is simpler to validate.
+- Exact `gh` query syntax + multi-repo iteration and per-repo base-branch config
+  for both Routines.
+- Branch-protection ruleset definition to apply/verify per repo.
 - The `/issue` skill output contract the implementer relies on (file pointers,
   out-of-scope section) — confirm/align.
