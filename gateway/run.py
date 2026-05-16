@@ -16447,6 +16447,22 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
 
+            # Feedback optimizer rides the same low-frequency tick. It is
+            # disabled by default and internally gated by its own interval
+            # + minimum-rated-turns threshold, so this is just the poll.
+            try:
+                from agent.feedback_optimizer import (
+                    maybe_run_feedback_optimization,
+                )
+                maybe_run_feedback_optimization(
+                    idle_for_seconds=float("inf"),
+                    on_summary=lambda msg: logger.info(
+                        "feedback_optimizer: %s", msg
+                    ),
+                )
+            except Exception as e:
+                logger.debug("Feedback optimizer tick error: %s", e)
+
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")
 

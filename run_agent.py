@@ -15630,6 +15630,19 @@ class AIAgent:
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
         }
+        # Expose the persisted id of this turn's final assistant message so
+        # callers (CLI/web) can attach an optional thumbs rating to it later.
+        if self._session_db is not None:
+            try:
+                result["assistant_message_id"] = (
+                    self._session_db.get_last_assistant_message_id(
+                        self.session_id
+                    )
+                )
+            except Exception:
+                result["assistant_message_id"] = None
+        else:
+            result["assistant_message_id"] = None
         if self._tool_guardrail_halt_decision is not None:
             result["guardrail"] = self._tool_guardrail_halt_decision.to_metadata()
         # If a /steer landed after the final assistant turn (no more tool

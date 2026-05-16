@@ -23,6 +23,8 @@ import {
   Hash,
   X,
   Play,
+  ThumbsUp,
+  ThumbsDown,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -134,11 +136,30 @@ function ToolCallBlock({
 function MessageBubble({
   msg,
   highlight,
+  sessionId,
 }: {
   msg: SessionMessage;
   highlight?: string;
+  sessionId: string;
 }) {
   const { t } = useI18n();
+  const [rating, setRating] = useState<number | null>(msg.rating ?? null);
+  const [ratingBusy, setRatingBusy] = useState(false);
+
+  const applyRating = async (next: -1 | 1) => {
+    if (ratingBusy || msg.id == null) return;
+    // Toggle off when clicking the active choice.
+    const value: -1 | 0 | 1 = rating === next ? 0 : next;
+    setRatingBusy(true);
+    try {
+      await api.rateMessage(sessionId, msg.id, value);
+      setRating(value === 0 ? null : value);
+    } catch {
+      // Leave the prior state untouched on failure.
+    } finally {
+      setRatingBusy(false);
+    }
+  };
 
   const ROLE_STYLES: Record<
     string,
@@ -216,6 +237,36 @@ function MessageBubble({
           ))}
         </div>
       )}
+      {msg.role === "assistant" && msg.id != null && (
+        <div className="mt-2 flex items-center gap-1">
+          <button
+            type="button"
+            disabled={ratingBusy}
+            onClick={() => applyRating(1)}
+            aria-label="Thumbs up"
+            className={`p-1 rounded transition-colors disabled:opacity-50 ${
+              rating === 1
+                ? "text-success"
+                : "text-muted-foreground hover:text-success"
+            }`}
+          >
+            <ThumbsUp className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            disabled={ratingBusy}
+            onClick={() => applyRating(-1)}
+            aria-label="Thumbs down"
+            className={`p-1 rounded transition-colors disabled:opacity-50 ${
+              rating === -1
+                ? "text-destructive"
+                : "text-muted-foreground hover:text-destructive"
+            }`}
+          >
+            <ThumbsDown className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -224,9 +275,11 @@ function MessageBubble({
 function MessageList({
   messages,
   highlight,
+  sessionId,
 }: {
   messages: SessionMessage[];
   highlight?: string;
+  sessionId: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -248,7 +301,12 @@ function MessageList({
       className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2"
     >
       {messages.map((msg, i) => (
-        <MessageBubble key={i} msg={msg} highlight={highlight} />
+        <MessageBubble
+          key={i}
+          msg={msg}
+          highlight={highlight}
+          sessionId={sessionId}
+        />
       ))}
     </div>
   );
@@ -401,7 +459,11 @@ function SessionRow({
             </p>
           )}
           {messages && messages.length > 0 && (
-            <MessageList messages={messages} highlight={searchQuery} />
+            <MessageList
+              messages={messages}
+              highlight={searchQuery}
+              sessionId={session.id}
+            />
           )}
         </div>
       )}

@@ -75,6 +75,19 @@ export const api = {
     fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }),
+  rateMessage: (sessionId: string, messageId: number, rating: -1 | 0 | 1) =>
+    fetchJSON<{ ok: boolean; message_id: number; rating: number }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/messages/${messageId}/rating`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rating }),
+      },
+    ),
+  getFeedbackStats: () =>
+    fetchJSON<{ up: number; down: number; total_rated: number; score: number }>(
+      "/api/feedback/stats",
+    ),
   getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
     const qs = new URLSearchParams();
     if (params.file) qs.set("file", params.file);
@@ -424,6 +437,7 @@ export interface EnvVarInfo {
 }
 
 export interface SessionMessage {
+  id?: number;
   role: "user" | "assistant" | "system" | "tool";
   content: string | null;
   tool_calls?: Array<{
@@ -433,6 +447,7 @@ export interface SessionMessage {
   tool_name?: string;
   tool_call_id?: string;
   timestamp?: number;
+  rating?: number | null;
 }
 
 export interface SessionMessagesResponse {
