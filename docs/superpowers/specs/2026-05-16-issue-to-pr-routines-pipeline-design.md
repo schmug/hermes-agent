@@ -3,9 +3,12 @@
 **Date:** 2026-05-16
 **Status:** Approved design — ready for implementation planning
 **Owner:** Cory (solo dev, ~4 repos)
-**Rollout:** Pilot on **one** repo for a cycle, verify the gate, then expand to
-the rest (dmarcheck, donthype-me, benchburner, apartment-stager). Pilot repo TBD
-by owner.
+**Rollout:** Pilot on **dmarcheck** for a cycle, verify the gate, then expand to
+donthype-me, benchburner, apartment-stager. dmarcheck is `main`-flow (no
+base-branch variable) and has the most security-sensitive paths — chosen
+deliberately as a stress test of the risk denylist (condition 4). Its existing
+security hooks (e.g. MTA-STS `redirect:"manual"` block) act as an additional
+backstop during the pilot.
 
 ## Problem
 
@@ -180,12 +183,10 @@ the binding gate and treat the label purely as an intent marker.
   ≤8 files; ~4h cycle (4 cycles/day, ~8 runs/day).
 - **Branch protection:** confirmed/provisioned in implementation step 1 before
   any Routine goes live.
-- **Rollout:** pilot one repo, then expand to all four.
+- **Rollout:** pilot **dmarcheck**, then expand to the other three.
 
 ## Open items for the implementation plan
 
-- **Pilot repo selection** (owner to name). Note: donthype-me's `dev→main` flow
-  makes it a poorer first pilot; a `main`-flow repo is simpler to validate.
 - Exact `gh` query syntax + multi-repo iteration and per-repo base-branch config
   for both Routines.
 - Branch-protection ruleset definition to apply/verify per repo.
